@@ -89,18 +89,14 @@ class Minimax:
 
 
 # Adapting ConnectX to pyplAI
-PLAYER_NUMBER = 2
-LIMIT_TIME = 1.9
-TOTAL_LIMIT_TIME = time.time() + LIMIT_TIME
-
 class ConnectXState:
     ROWS = 6
     COLUMNS = 7
 
-    def __init__(self, board_data, current_player=1, stop_time=0):
+    def __init__(self, board_data, current_player=1, time_limit_epoch=None):
         self.board = list(board_data)
         self.jugadorActual = current_player
-        self.stop_time = stop_time
+        self.stop_time = time_limit_epoch
 
     def get_piece(self, row, col):
         return self.board[row * self.COLUMNS + col]
@@ -191,7 +187,7 @@ class ConnectXState:
 
     def heuristic(self, player):
 
-        if self.stop_time != 0 and time.time() > self.stop_time:
+        if self.stop_time is not None and (self.stop_time != 0 and time.time() > self.stop_time):
             raise TimeoutError("Time limit exceeded")
             
         score = 0
@@ -230,27 +226,22 @@ class ConnectXState:
 
 # Agent function that uses Minimax to find the best move for the current player
 def minimax_agent(observation, configuration):
-
+    limit_time = configuration.timeout - 0.1
+    turn_deadline = time.time() + limit_time
+    
     current_board = observation.board
     current_player = observation.mark
         
-    pyplai_state = ConnectXState(current_board, current_player, TOTAL_LIMIT_TIME)
+    pyplai_state = ConnectXState(current_board, current_player, turn_deadline)
 
-    start_time = time.time()
-    best_move = None
-    last_iteration_time = 0.0
-
-    for depth in range(1, 5):
-        time_left = TOTAL_LIMIT_TIME - time.time()
-
-        if depth > 1:
-            safety_margin = 1.5
-            if time_left < last_iteration_time * safety_margin:
-                break
-        
-        start_iteration_time = time.time()
-
+    valid_moves = pyplai_state.get_moves()
+    best_move = valid_moves[len(valid_moves)//2] if valid_moves else None
+    
+    for depth in range(1, 5):   
         try:
+            
+            if time.time() > turn_deadline:
+                break
             
             minimax_solver = Minimax(
                 ConnectXState.apply_move,
@@ -258,12 +249,10 @@ def minimax_agent(observation, configuration):
                 ConnectXState.is_final_state, 
                 ConnectXState.wins_player, 
                 ConnectXState.heuristic,
-                PLAYER_NUMBER, 
+                2, 
                 depth)
             
             recommended_move = minimax_solver.ejecuta(pyplai_state)
-
-            last_iteration_time = time.time() - start_iteration_time
 
             if recommended_move is not None:
                 best_move = recommended_move

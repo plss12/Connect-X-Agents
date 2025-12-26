@@ -139,8 +139,6 @@ class MCTS:
 
 
 # Adapting ConnectX to pyplAI style
-PLAYER_NUMBER = 2
-LIMIT_TIME = 1.9
 
 class ConnectXState:
     ROWS = 6
@@ -240,7 +238,7 @@ class ConnectXState:
 
 # Agent function that uses MCTS to find the best move for the current player
 def mcts_agent(observation, configuration):
-
+    limit_time = configuration.timeout - 0.1
     current_board = observation.board
     current_player = observation.mark
     
@@ -251,8 +249,9 @@ def mcts_agent(observation, configuration):
          ConnectXState.get_moves, 
          ConnectXState.is_final_state, 
          ConnectXState.wins_player, 
-         PLAYER_NUMBER, 
-         LIMIT_TIME)
+         2, 
+         limit_time)
+
     recommended_move = mcts_solver.ejecuta(pyplai_state)
     
     return recommended_move

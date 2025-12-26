@@ -3,9 +3,6 @@ import math
 import shutil
 import numpy as np
 from tqdm import tqdm
-from copy import deepcopy
-import gymnasium as gym
-from kaggle_environments import make
 import matplotlib
 matplotlib.use('Agg')
 
@@ -21,85 +18,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
-# Adapting ConnectX to gymnasium for Tianshou
-class ConnectXGym(gym.Env):
-    def __init__(self, switch_prob=0.5, opponent="negamax", apply_symmetry=True):
-        self.env = make("connectx", debug=False)
-        self.switch_prob = switch_prob
-        self.opponent = opponent
-        self.apply_symmetry = apply_symmetry
-
-        self.pair = [None, self.opponent]
-        self.trainer = self.env.train(self.pair)
-
-        self.rows = self.env.configuration.rows
-        self.columns = self.env.configuration.columns
-
-        self.action_space = gym.spaces.Discrete(self.columns)
-        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(3,self.rows, self.columns), dtype=np.float32)
-
-        self.is_mirrored = False
-    
-    def set_opponent(self, opponent):
-        self.opponent = opponent
-        self.pair = [None, self.opponent]
-        self.trainer = self.env.train(self.pair)
-    
-    def _process_observation(self, observation):
-        board = np.array(observation['board']).reshape(self.rows, self.columns)
-
-        if observation.mark == 2:
-            new_board = np.copy(board)
-            new_board[board==1] = 2
-            new_board[board==2] = 1
-            board = new_board
-        
-        if self.is_mirrored:
-            board = np.fliplr(board)
-
-        layer_me = (board == 1)
-        layer_opponent = (board == 2)
-        layer_empty = (board == 0)
-
-        return np.stack([layer_me, layer_opponent, layer_empty])
-    
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
-
-        self.is_mirrored = (self.apply_symmetry and self.np_random.random() < 0.5)
-
-        self.pair = [None, self.opponent]
-
-        if np.random.random() < self.switch_prob:
-            self.pair = self.pair[::-1]
-            self.trainer = self.env.train(self.pair)
-        else:
-            self.trainer = self.env.train(self.pair)
-
-        observation = self.trainer.reset()
-        return self._process_observation(observation), {}
-
-    def step(self, action):
-        real_action = action
-        if self.is_mirrored:
-            real_action = self.columns - 1 - action
-
-        observation, reward, done, info = self.trainer.step(int(real_action))
-
-        processed_obs = self._process_observation(observation)
-        
-        if done:
-            if reward == 1:
-                reward = 100
-            elif reward == -1:
-                reward = -100
-            else:
-                reward = 0
-        else: 
-            reward = 1
-        
-        return self._process_observation(observation), reward, done, False, info
-
+from connectXgym import ConnectXGym, apply_mask_to_logits, check_winning_move
+import pyplAI
+from pyplAI_algorithms import ConnectXState
 
 
 # Noisy Linear Layer
@@ -160,28 +81,20 @@ class RainbowCNN(nn.Module):
         
         # Feature Extractor (CNN)
         self.conv = nn.Sequential(
-            nn.Conv2d(in_channels=c, out_channels=64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            
+            nn.Conv2d(in_channels=c, out_channels=64, kernel_size=3, stride=1, padding=1), nn.ReLU(),
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1), nn.ReLU(),
+            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1), nn.ReLU(),
             nn.Flatten())
 
         self.flatten_dim = 128 * h * w
 
         # Dueling Architecture (Value and Advantage streams)
         self.value_stream = nn.Sequential(
-            NoisyLinear(self.flatten_dim, 512),
-            nn.ReLU(),
+            NoisyLinear(self.flatten_dim, 512), nn.ReLU(),
             NoisyLinear(512, 1))
         
         self.advantage_stream = nn.Sequential(
-            NoisyLinear(self.flatten_dim, 512),
-            nn.ReLU(),
+            NoisyLinear(self.flatten_dim, 512), nn.ReLU(),
             NoisyLinear(512, action_shape))
 
     def forward(self, obs, state=None, info={}):
@@ -194,58 +107,139 @@ class RainbowCNN(nn.Module):
         # Dueling Architecture
         value = self.value_stream(features)
         advantage = self.advantage_stream(features)
-
         q_values = value + advantage - advantage.mean(dim=1, keepdim=True)
+
+        # Apply action mask for invalid actions
+        mask = None
+        if "action_mask" in info:
+            mask = info["action_mask"]
+            
+        q_values = apply_mask_to_logits(q_values, mask, self.device)
 
         return q_values, state
 
 
 
-# Opponent agent class for using Tianshou policies in self-play
-class TrainedAgentOpponent:
-    def __init__(self, policy, env_rows=6, env_columns=7):
-        self.policy = policy
-        self.policy.eval()
+# Rainbow agent with rules for instant win or loss
+class RainbowAgent:
+    def __init__(self, policy, env_rows=6, env_columns=7, device='cuda'):
+        self.net = policy.model
+        self.net.eval()
         self.env_rows = env_rows
         self.env_columns = env_columns
+        self.device = device
 
     def __call__(self, observation, configuration):
         board = np.array(observation['board']).reshape(self.env_rows, self.env_columns)
 
-        if observation.mark == 2:
-            new_board = np.copy(board)
-            new_board[board==1] = 2
-            new_board[board==2] = 1
-            board = new_board
+        me = observation.mark
+        opponent = 3 - me
+        valid_moves = [c for c in range(self.env_columns) if board[0][c] == 0]
 
-        layer_me = (board == 1)
-        layer_opponent = (board == 2)
-        layer_empty = (board == 0)
-        state = np.stack([layer_me, layer_opponent, layer_empty])
+        # Check for winning move
+        for col in valid_moves:
+            if self.check_winning_move(board, col, me):
+                return int(col)
 
-        batch_obs = Batch(obs=np.array([state]), info={})
-
-        with torch.no_grad():
-            result = self.policy(batch_obs)
+        # Check for opponent winning move
+        for col in valid_moves:
+            if self.check_winning_move(board, col, opponent):
+                return int(col)
         
-        return int(result.act[0])
+        # If no winning move, use policy
+        net_board = np.copy(board)
+        if me == 2:
+            net_board[board==1] = 2
+            net_board[board==2] = 1
+
+        layer_me = (net_board == 1)
+        layer_opponent = (net_board == 2)
+        layer_empty = (net_board == 0)
+        state = np.stack([layer_me, layer_opponent, layer_empty])
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
+
+        mask_bool = [False] * configuration.columns
+        for col in valid_moves:
+            mask_bool[col] = True
+        mask_tensor = torch.tensor(mask_bool, dtype=torch.bool).to(self.device).unsqueeze(0)
+        
+        with torch.no_grad():
+            q_values, _ = self.net(state_tensor, info={"action_mask": mask_tensor})
+            q_values = q_values.squeeze()
+
+            best_move = int(torch.argmax(q_values).item())
+        
+        if best_move not in valid_moves:
+            best_move = int(np.random.choice(valid_moves))
+        
+        return best_move
+
+def minimax_lite_agent(observation, configuration):
+    depth = 2
+
+    current_board = observation.board
+    current_player = observation.mark
+        
+    pyplai_state = ConnectXState(current_board, current_player)
+
+    valid_moves = pyplai_state.get_moves()
+    best_move = valid_moves[len(valid_moves)//2] if valid_moves else None
+        
+    minimax_solver = pyplAI.Minimax(
+                    ConnectXState.apply_move,
+                    ConnectXState.get_moves, 
+                    ConnectXState.is_final_state, 
+                    ConnectXState.wins_player, 
+                    ConnectXState.heuristic,
+                    2, 
+                    depth)
+            
+    recommended_move = minimax_solver.ejecuta(pyplai_state)
+
+    if recommended_move is not None:
+        best_move = recommended_move
+
+    return best_move
 
 
 
 # Training function with self-play
-def train_self_play():
+def train_rainbow_self_play():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"\nUsing device: {device}")
     
-    log_path = "logs_rainbow_self_play"
-    if not os.path.exists(log_path):
-        os.makedirs(log_path)
+    log_path = "files_rainbow_self_play/logs"
+    if os.path.exists(log_path):
+        shutil.rmtree(log_path)
+    os.makedirs(log_path)
+    
+    model_path = "files_rainbow_self_play/models"
+    if os.path.exists(model_path):
+        shutil.rmtree(model_path)
+    os.makedirs(model_path)
     
     TOTAL_EPOCHS = 100
     UPDATE_OPPONENT_FREQ = 5
 
-    train_envs = DummyVectorEnv([lambda: ConnectXGym(opponent='random', apply_symmetry=True) for _ in range(10)])
-    test_envs = DummyVectorEnv([lambda: ConnectXGym(opponent='negamax', apply_symmetry=False) for _ in range(10)])
+    train_envs = DummyVectorEnv([lambda: ConnectXGym(opponent='random', apply_symmetry=True),
+                                 lambda: ConnectXGym(opponent='random', apply_symmetry=True),
+
+                                 lambda: ConnectXGym(opponent='negamax', apply_symmetry=True),
+                                 lambda: ConnectXGym(opponent='negamax', apply_symmetry=True),
+
+                                 lambda: ConnectXGym(opponent=minimax_lite_agent, apply_symmetry=True),
+                                 lambda: ConnectXGym(opponent=minimax_lite_agent, apply_symmetry=True),
+
+                                 lambda: ConnectXGym(opponent='random', apply_symmetry=True),
+                                 lambda: ConnectXGym(opponent='random', apply_symmetry=True),
+                                 lambda: ConnectXGym(opponent='random', apply_symmetry=True),
+                                 lambda: ConnectXGym(opponent='random', apply_symmetry=True)])
+
+    test_envs_p1 = [lambda: ConnectXGym(opponent='negamax', switch_prob=0.0, apply_symmetry=False) for _ in range(3)]
+    test_envs_p2 = [lambda: ConnectXGym(opponent='negamax', switch_prob=1.0, apply_symmetry=False) for _ in range(3)]
+    test_envs_p3 = [lambda: ConnectXGym(opponent=minimax_lite_agent, switch_prob=0.0, apply_symmetry=False) for _ in range(2)]
+    test_envs_p4 = [lambda: ConnectXGym(opponent=minimax_lite_agent, switch_prob=1.0, apply_symmetry=False) for _ in range(2)]
+    test_envs = DummyVectorEnv(test_envs_p1 + test_envs_p2 + test_envs_p3 + test_envs_p4)
 
     net = RainbowCNN((3, 6, 7), 7, device).to(device)
 
@@ -264,26 +258,32 @@ def train_self_play():
     print("Prefilling buffer...\n")
     train_collector.collect(n_step=20000, random=True, reset_before_collect=True)
 
-    last_updated_epoch = 0
+    train_self_play.last_updated_epoch = 0
 
     def train_fn(epoch, env_step):
-
-        nonlocal last_updated_epoch
-
-        if (epoch > 1 and epoch % UPDATE_OPPONENT_FREQ == 1 and epoch != last_updated_epoch):
+        if (epoch > 1 and epoch % UPDATE_OPPONENT_FREQ == 1 and epoch != train_self_play.last_updated_epoch):
             tqdm.write("\nUpdating opponent...\n")
             
-            last_updated_epoch = epoch
+            train_self_play.last_updated_epoch = epoch
             
-            current_policy_copy = deepcopy(policy)
-            current_policy_copy.eval()
-            new_opponent_bot = TrainedAgentOpponent(current_policy_copy)
+            torch.save(policy.state_dict(), os.path.join(model_path, "temp_opponent.pth"))
 
-            for worker in train_envs.workers:
-                worker.env.set_opponent(new_opponent_bot)
+            new_net = RainbowCNN((3, 6, 7), action_shape=7, device=device).to(device)
+            new_policy = DiscreteQLearningPolicy(model=new_net, action_space=train_envs.action_space[0], eps_training=0.0, eps_inference=0.0).to(device)
+            new_policy.load_state_dict(torch.load(os.path.join(model_path, "temp_opponent.pth")), strict=False)
+            new_policy.eval()
+            
+            new_opponent_bot = RainbowAgent(new_policy)
+
+            for i in range(6, len(train_envs.workers)):
+                train_envs.workers[i].env.set_opponent(new_opponent_bot)
     
     def test_fn(epoch, env_step):
         print(f"\r{' ' * shutil.get_terminal_size().columns}\r", end='')
+
+    def save_dual_checkpoint(algorithm):
+        torch.save(algorithm.policy.model.state_dict(), os.path.join(log_path, "best_rainbow_model.pth"))
+        torch.save(algorithm.policy.state_dict(), os.path.join(log_path, "best_rainbow_agent.pth"))
 
     logger = TensorboardLogger(SummaryWriter(log_path))
  
@@ -292,10 +292,9 @@ def train_self_play():
                                         max_epochs=TOTAL_EPOCHS, epoch_num_steps=20000, batch_size=64, logger=logger,
                                         collection_step_num_env_steps=2000, update_step_num_gradient_steps_per_sample=0.1,
                                         training_fn=train_fn, test_fn=test_fn,
-                                        save_best_fn=lambda policy: torch.save(policy.state_dict(), os.path.join(log_path, "best_rainbow_agent.pth")),
-                                        stop_fn=lambda result: result.returns_stats.mean_reward >= 50))
+                                        save_best_fn=save_dual_checkpoint, stop_fn=None))
     
     print("\n\nTraining finished")
 
 if __name__ == "__main__":
-    train_self_play()
+    train_rainbow_self_play()
