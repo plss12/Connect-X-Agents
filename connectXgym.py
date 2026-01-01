@@ -87,17 +87,20 @@ class ConnectXGym(gym.Env):
         mask = self._get_action_mask(np.array(observation['board']).reshape(self.rows, self.columns))
         
         if done:
+            # Win reward
             if reward == 1:
                 reward = 20
+            # Loss reward
             elif reward == -1:
                 reward = -20
+            # Draw reward
             else:
                 reward = 0
         else:
-            reward = -0.5
+            # Step negative reward
+            reward = -1
+            # Center column positive reward
             if int(real_action) == self.center_col:
-                reward = 2
-            elif int(real_action) in [self.center_col-1, self.center_col+1]:
                 reward = 1
 
         if info is None: info = {}
