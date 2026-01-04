@@ -1,7 +1,4 @@
 .vscode
 __pycache__
-files_rainbow
-files_ppo
-final_models
 
 *.pth

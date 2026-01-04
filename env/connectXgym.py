@@ -5,7 +5,7 @@ import torch
 
 # Adapting ConnectX to gymnasium for Tianshou
 class ConnectXGym(gym.Env):
-    def __init__(self, switch_prob=0.5, opponent="negamax", apply_symmetry=True):
+    def __init__(self, switch_prob=0.5, opponent="negamax", apply_symmetry=False):
         self.env = make("connectx", debug=False)
         self.switch_prob = switch_prob
         self.opponent = opponent
@@ -101,7 +101,7 @@ class ConnectXGym(gym.Env):
             reward = -1
             # Center column positive reward
             if int(real_action) == self.center_col:
-                reward = 1
+                reward += 1
 
         if info is None: info = {}
         info["action_mask"] = mask
@@ -145,6 +145,5 @@ def apply_mask_to_logits(logits, mask, device):
     
     if logits.dim() == 3 and mask.dim() == 2:
         mask = mask.unsqueeze(-1)
-
 
     return torch.where(mask, logits, -100)

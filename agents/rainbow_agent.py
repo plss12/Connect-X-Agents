@@ -153,8 +153,8 @@ def check_winning_move(board, col, mark):
 TRAINED_MODEL = None
 DEVICE = 'cpu'
 NUM_ATOMS = 101
-V_MIN = -40
-V_MAX = 40
+V_MIN = -30
+V_MAX = 30
 
 SUPPORT = torch.linspace(V_MIN, V_MAX, NUM_ATOMS).to(DEVICE)
 
@@ -167,7 +167,7 @@ def load_model():
     if os.path.exists(kaggle_path):
         model_path = kaggle_path
     else:
-        model_path = "Submissions/rainbow/model.pth"
+        model_path = "model.pth"
 
     model = RainbowCNN(state_shape=(3, 6, 7), action_shape=7, num_atoms=NUM_ATOMS, device=DEVICE)
 

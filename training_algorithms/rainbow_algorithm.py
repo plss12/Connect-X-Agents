@@ -8,8 +8,8 @@ matplotlib.use('Agg')
 
 from tianshou.algorithm import RainbowDQN
 from tianshou.algorithm.modelfree.c51 import C51Policy
-from tianshou.algorithm.optim import AdamOptimizerFactory
-from tianshou.data import Collector, PrioritizedVectorReplayBuffer, VectorReplayBuffer
+from tianshou.algorithm.optim import AdamOptimizerFactory, LRSchedulerFactoryLinear
+from tianshou.data import Collector, PrioritizedVectorReplayBuffer
 from tianshou.env import DummyVectorEnv
 from tianshou.trainer import OffPolicyTrainerParams
 from tianshou.utils import TensorboardLogger
@@ -197,17 +197,17 @@ def train_rainbow_self_play():
     TOTAL_EPOCHS = 100
     STEP_PER_EPOCH = 20000
     TOTAL_STEPS = TOTAL_EPOCHS * STEP_PER_EPOCH
-    STEP_PER_COLLECT = 1000
-    UPDATE_PER_COLLECT = 0.5
-    BATCH_SIZE = 128
+    STEP_PER_COLLECT = 2000
+    UPDATE_PER_COLLECT = 0.25
+    BATCH_SIZE = 512
     BUFFER_SIZE = 500000
-    UPDATE_OPPONENT_FREQ = 5
+    UPDATE_OPPONENT_FREQ = 2
     TEST_EPISODES = 20
-    LR = 5e-5
+    LR = 2.5e-4
 
     NUM_ATOMS = 101
-    V_MIN = -40
-    V_MAX = 40
+    V_MIN = -30
+    V_MAX = 30
     NOISY_STD = 0.5
 
     ALPHA = 0.6
@@ -234,10 +234,17 @@ def train_rainbow_self_play():
 
     net = RainbowCNN((3, 6, 7), 7, num_atoms=NUM_ATOMS, device=device).to(device)
 
+    optim_factory = AdamOptimizerFactory(lr=LR, eps=1e-5)
+    optim_factory.with_lr_scheduler_factory(
+        LRSchedulerFactoryLinear(
+            max_epochs=TOTAL_EPOCHS,
+            epoch_num_steps=STEP_PER_EPOCH,
+            collection_step_num_env_steps=STEP_PER_COLLECT))
+
     policy = C51Policy(model=net, action_space=train_envs.action_space[0], num_atoms=NUM_ATOMS,
                        v_min=V_MIN, v_max=V_MAX, eps_inference=0.0, eps_training=0.0).to(device)
 
-    algorithm = RainbowDQN(policy=policy, optim=AdamOptimizerFactory(lr=LR), gamma=0.99,
+    algorithm = RainbowDQN(policy=policy, optim=optim_factory, gamma=0.99,
                     n_step_return_horizon=3, target_update_freq=400)
     
     if os.path.exists(os.path.join(model_path, "best_rainbow_agent.pth")):
@@ -282,7 +289,8 @@ def train_rainbow_self_play():
             train_envs.workers[index_to_update].env.set_opponent(new_opponent_bot)
 
         if env_step % STEP_PER_COLLECT == 0:
-            logger.write("training/env_step", env_step, {"training/beta": beta, "training/opponent_version": train_rainbow_self_play.opponent_version})
+            current_lr = algorithm.optim._optim.param_groups[0]['lr']
+            logger.write("training/env_step", env_step, {"training/beta": beta, "training/opponent_version": train_rainbow_self_play.opponent_version, "training/lr": current_lr})
     
     def test_fn(epoch, env_step):
         print(f"\r{' ' * shutil.get_terminal_size().columns}\r", end='')
@@ -299,6 +307,8 @@ def train_rainbow_self_play():
                                         collection_step_num_env_steps=STEP_PER_COLLECT, update_step_num_gradient_steps_per_sample=UPDATE_PER_COLLECT,
                                         training_fn=train_fn, test_fn=test_fn, save_best_fn=save_dual_checkpoint, stop_fn=None))
     
+    torch.save(algorithm.policy.model.state_dict(), os.path.join(model_path, "final_rainbow_model.pth"))
+    torch.save(algorithm.state_dict(), os.path.join(model_path, "final_rainbow_agent.pth"))
     print("\n\nTraining finished")
 
 if __name__ == "__main__":

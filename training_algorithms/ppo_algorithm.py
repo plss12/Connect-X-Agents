@@ -63,6 +63,7 @@ class Actor(nn.Module):
     def forward(self, obs, state=None, info={}):
         features, _ = self.preprocess_net(obs, state)
         logits = self.last_layer(features)
+        logits = torch.clamp(logits, min=-10, max=10)
 
         # Apply action mask for invalid actions
         if info is not None and "action_mask" in info:
@@ -156,10 +157,10 @@ def train_ppo_self_play():
     STEP_PER_EPOCH = 20000
     STEP_PER_COLLECT = 2000
     UPDATE_PER_COLLECT = 10
-    BATCH_SIZE = 100
-    UPDATE_OPPONENT_FREQ = 5
+    BATCH_SIZE = 500
+    UPDATE_OPPONENT_FREQ = 2
     TEST_EPISODES = 20
-    LR = 5e-4
+    LR = 2.5e-4
 
     train_envs = DummyVectorEnv([lambda: ConnectXGym(opponent='random', apply_symmetry=True),
                                  lambda: ConnectXGym(opponent='random', apply_symmetry=True),
@@ -190,16 +191,14 @@ def train_ppo_self_play():
         LRSchedulerFactoryLinear(
             max_epochs=TOTAL_EPOCHS,
             epoch_num_steps=STEP_PER_EPOCH,
-            collection_step_num_env_steps=STEP_PER_COLLECT
-        )
-    )
+            collection_step_num_env_steps=STEP_PER_COLLECT))
 
     policy = DiscreteActorPolicy(actor=actor, action_space=train_envs.action_space[0], 
                                 deterministic_eval=True).to(device)
     
     algorithm = PPO(policy=policy, critic=critic, optim=optim_factory, eps_clip=0.2, 
-                    value_clip=0.5, vf_coef=0.5, ent_coef=0.01, gae_lambda=0.95, max_grad_norm=0.5, 
-                    gamma=0.99, advantage_normalization=True).to(device)
+                    value_clip=0.5, vf_coef=0.5, ent_coef=0.02, gae_lambda=0.95, max_grad_norm=0.5, 
+                    gamma=0.99, advantage_normalization=True, return_scaling=True).to(device)
 
     if os.path.exists(os.path.join(model_path, "best_ppo_agent.pth")):
         algorithm.load_state_dict(torch.load(os.path.join(model_path, "best_ppo_agent.pth"), weights_only=False))
@@ -251,6 +250,8 @@ def train_ppo_self_play():
                     update_step_num_repetitions=UPDATE_PER_COLLECT, test_step_num_episodes=TEST_EPISODES, logger=logger, 
                     batch_size=BATCH_SIZE, training_fn=train_fn, test_fn=test_fn, save_best_fn=save_dual_checkpoint, stop_fn=None))
     
+    torch.save(algorithm.policy.actor.state_dict(), os.path.join(model_path, "final_ppo_actor.pth"))
+    torch.save(algorithm.state_dict(), os.path.join(model_path, "final_ppo_agent.pth"))
     print("\n\nTraining finished")
 
 if __name__ == "__main__":

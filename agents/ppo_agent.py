@@ -108,7 +108,7 @@ def load_model():
     if os.path.exists(kaggle_path):
         model_path = kaggle_path
     else:
-        model_path = "Submissions/ppo/model.pth"
+        model_path = "model.pth"
 
     base_net = FeatureExtractor(state_shape=(3, 6, 7), device=DEVICE)
     actor = Actor(base_net, action_shape=7, device=DEVICE)

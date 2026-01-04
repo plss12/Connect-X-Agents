@@ -204,6 +204,7 @@ def mcts_agent(observation, configuration):
     return recommended_move
 
 
+
 # Lite minimax agent with CONNECT X adapted for training
 def minimax_lite_agent(observation, configuration):
     depth = 2
