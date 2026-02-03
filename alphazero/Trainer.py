@@ -4,6 +4,7 @@ import numpy as np
 from tqdm import tqdm
 import time
 import os
+import re
 from pickle import Pickler, Unpickler
 
 class Trainer:
