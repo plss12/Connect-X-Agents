@@ -78,7 +78,7 @@ class MCTS:
             self.Ns[s] = 0
             self.Vs[s] = valid_moves
             
-            return -v.item()
+            return -v
 
         # 3. Known Node -> Selection using PUCT
         valid_moves = self.Vs[s]
@@ -89,16 +89,15 @@ class MCTS:
         cpuct = self.args.cpuct
         sqrt_Ns = math.sqrt(self.Ns[s])
 
-        for a in range(self.game.get_action_size()):
-            if valid_moves[a]:
-                if (s, a) in self.Qsa:
-                    u = self.Qsa[(s, a)] + cpuct * self.Ps[s][a] * sqrt_Ns / (1 + self.Nsa[(s, a)])
-                else:
-                    u = cpuct * self.Ps[s][a] * sqrt_Ns + 1e-8 
+        for a in np.where(valid_moves)[0]:
+            if (s, a) in self.Qsa:
+                u = self.Qsa[(s, a)] + cpuct * self.Ps[s][a] * sqrt_Ns / (1 + self.Nsa[(s, a)])
+            else:
+                u = cpuct * self.Ps[s][a] * sqrt_Ns + 1e-8 
 
-                if u > cur_best:
-                    cur_best = u
-                    best_act = a
+            if u > cur_best:
+                cur_best = u
+                best_act = a
 
         a = best_act
         

@@ -5,6 +5,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 import time
 import os
+import glob
+import re
 import numpy as np
 
 class ResidualBlock(nn.Module):
@@ -107,7 +109,7 @@ class NNetWrapper:
         """
         examples: list of (board, pi, v)
         """
-        optimizer = optim.Adam(self.nnet.parameters(), lr=self.args.lr)
+        optimizer = optim.Adam(self.nnet.parameters(), lr=self.args.lr, weight_decay=self.args.weight_decay)
 
         for epoch in range(self.args.epochs):
             self.nnet.train()
@@ -161,7 +163,6 @@ class NNetWrapper:
                 optimizer.step()
 
                 batch_idx += 1
-                
             
             # Update TensorBoard
             global_step = (iteration - 1) * self.args.epochs + epoch
@@ -169,7 +170,6 @@ class NNetWrapper:
                 writer.add_scalar('Loss/Policy', pi_losses.avg, global_step)
                 writer.add_scalar('Loss/Value', v_losses.avg, global_step)
                 writer.add_scalar('Loss/Total', pi_losses.avg + v_losses.avg, global_step)
-
 
             print(f"Epoch {epoch+1}/{self.args.epochs} | Loss_Pi: {pi_losses.avg:.4f} | Loss_V: {v_losses.avg:.4f}")
 
@@ -194,16 +194,35 @@ class NNetWrapper:
             pi, v = self.nnet(board_tensor)
 
         # pi returns LogSoftmax, v returns Tanh
-        return torch.exp(pi).data.cpu().numpy()[0], v.data.cpu().numpy()[0]
+        return torch.exp(pi).detach().cpu().numpy()[0], v.item()
 
-    def save_checkpoint(self, folder='checkpoint', filename='checkpoint.pth.tar'):
+    def save_checkpoint(self, folder='checkpoints', filename='checkpoint.pth.tar'):
         filepath = os.path.join(folder, filename)
         if not os.path.exists(folder): os.mkdir(folder)
         torch.save({'state_dict': self.nnet.state_dict()}, filepath)
 
-    def load_checkpoint(self, folder='checkpoint', filename='checkpoint.pth.tar'):
+    def load_checkpoint(self, folder='checkpoints', filename='best.pth.tar'):
         filepath = os.path.join(folder, filename)
         if not os.path.exists(filepath): raise ValueError("No model in path {}".format(filepath))
         map_location = None if self.args.cuda else 'cpu'
         checkpoint = torch.load(filepath, map_location=map_location, weights_only=True)
         self.nnet.load_state_dict(checkpoint['state_dict'])
+
+    def get_latest_checkpoint_iteration(self, folder='checkpoints'):
+        if not os.path.exists(folder):
+            return 1
+        
+        files = glob.glob(os.path.join(folder, "checkpoint_*.examples"))
+        if not files:
+            return 1
+
+        iterations = []
+        for f in files:
+            try:
+                basename = os.path.basename(f)
+                num = int(re.findall(r'\d+', basename)[0])
+                iterations.append(num)
+            except:
+                pass
+                
+        return max(iterations) + 1 if iterations else 1

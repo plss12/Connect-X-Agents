@@ -17,10 +17,10 @@ class dotdict(dict):
 # --- HYPERPARAMETER CONFIGURATION ---
 args = dotdict({
     # 1. Training Configuration (Cycle)
-    'num_iters': 250,           # Number of total generations (Iterations)
+    'num_iters': 250,            # Number of total generations (Iterations)
     'num_eps': 50,               # Episodes (games) of Self-Play per iteration
-    'tempThreshold': 15,         # Turns with exploration (temperature=1) before playing seriously
-    'updateThreshold': 0.6,     # % of wins necessary for the new network to replace the old one (0.6 = 60%)
+    'tempThreshold': 10,         # Turns with exploration (temperature=1) before playing seriously
+    'updateThreshold': 0.55,     # % of wins necessary for the new network to replace the old one
     'maxlenOfQueue': 200000,     # Maximum number of training examples stored in memory
     'numItersForTrainExamplesHistory': 20, # Number of past iterations remembered for training
 
@@ -30,16 +30,17 @@ args = dotdict({
 
     # 3. Neural Network Configuration (Learning)
     'lr': 0.001,                 # Learning Rate
+    'weight_decay': 1e-4,        # L2 Regularization (Weight Decay)
     # 'dropout': 0.3,              # Dropout to prevent overfitting
     'epochs': 10,                # Number of training epochs for the network in each iteration
-    'batch_size': 64,            # Batch size
+    'batch_size': 256,           # Batch size
     'cuda': True,                # Use GPU (Change to False if you don't have NVIDIA)
     'num_channels': 64,          # Network size (convolutional filters)
 
     # 4. Checkpoint Configuration
-    'checkpoint': './alphazero/files/checkpoints/',     # Folder to save models
     'load_model': False,         # Load previous model? (Set True to resume)
-    'load_folder_file': ('./alphazero/files/checkpoints/', 'best.pth.tar'), # File to load if load_model=True
+    'checkpoint_folder': './alphazero/files/checkpoints/', # Folder to save checkpoints
+    'checkpoint_file': 'best.pth.tar',      # File to load if load_model=True
     'arenaCompare': 20,          # Evaluation games (Arena) New vs Old
 })
 
@@ -52,8 +53,16 @@ def main():
 
     # 2. Load Checkpoint (If we want to resume)
     if args.load_model:
-        print(f"Loading checkpoint from {args.load_folder_file}...")
-        nnet.load_checkpoint(args.load_folder_file[0], args.load_folder_file[1])
+        print(f"Loading checkpoint from {args.checkpoint_folder}...")
+        try:
+            nnet.load_checkpoint(args.checkpoint_folder, args.checkpoint_file)
+            start_iter = nnet.get_latest_checkpoint_iteration(args.checkpoint_folder)
+            print(f"Resuming training from iteration {start_iter}")
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            print("Starting training from scratch...")
+            args.load_model = False
+            start_iter = 1
     else:
         print("Starting training from scratch...")
 
@@ -71,15 +80,11 @@ def main():
         c.loadTrainExamples()
 
     # 6. Training
-    print("Starting the training loop...")
-    c.learn()
+    print(f"Starting the training loop from iteration {start_iter}...")
+    c.learn(start_iter)
 
     # 7. Close TensorBoard
     writer.close()
 
 if __name__ == "__main__":
-    # Ensure checkpoint folder exists
-    if not os.path.exists(args.checkpoint):
-        os.makedirs(args.checkpoint)
-        
     main()

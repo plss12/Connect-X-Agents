@@ -18,6 +18,10 @@ class Connect4Game:
     def get_action_size(self):
         """Number of possible actions (7 columns)"""
         return self.cols
+    
+    def get_valid_moves(self, board):
+        """Returns a binary vector of valid moves"""
+        return (board[0, :] == 0).astype(int)
 
     def get_next_state(self, board, player, action):
         """
@@ -37,10 +41,6 @@ class Connect4Game:
         
         # Return new board and change turn (-player)
         return b, -player
-    
-    def get_valid_moves(self, board):
-        """Returns a binary vector of valid moves"""
-        return (board[0, :] == 0).astype(int)
 
     def get_game_ended(self, board, player):
         """

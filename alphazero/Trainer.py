@@ -14,7 +14,6 @@ class Trainer:
         self.args = args
         self.mcts = MCTS(game, nnet, args)
         self.trainExamplesHistory = []  # Experience buffer
-        self.skipFirstSelfPlay = False  # Useful if loading a trained model
         self.writer = writer
 
     def executeEpisode(self):
@@ -93,7 +92,7 @@ class Trainer:
                     return r * curPlayer # Adjust result to original perspective
 
         print("Playing Arena...")
-        for _ in tqdm(range(self.args.arenaCompare)):
+        for _ in tqdm(range(self.args.arenaCompare // 2), desc="Arena"):
             # Half of the games start with the Old network, half with the New one
             # Game 1: Old (1) vs New (-1)
             res = play_match(pmcts, nmcts)
@@ -111,23 +110,23 @@ class Trainer:
 
     def saveTrainExamples(self, iteration):
         # Save example
-        folder = self.args.checkpoint
+        folder = self.args.checkpoint_folder
+        extension = ".examples"
         if not os.path.exists(folder): os.makedirs(folder)
-        filename = os.path.join(folder, f"checkpoint_{iteration}.examples")
+        filename = os.path.join(folder, f"checkpoint_{iteration}{extension}")
         with open(filename, "wb+") as f:
             Pickler(f).dump(self.trainExamplesHistory)
         
         # Delete old examples
-        extension = ".examples"
-        files_to_keep = {f"checkpoint_{iteration}.examples", f"checkpoint_{iteration-1}.examples"}
+        files_to_keep = {f"checkpoint_{iteration}{extension}", f"checkpoint_{iteration-1}{extension}"}
         for file in os.listdir(folder):
             if file.endswith(extension) and file not in files_to_keep:
                 os.remove(os.path.join(folder, file))
     
     def loadTrainExamples(self):
         # Looking for the examples file
-        model_name = self.args.load_folder_file[1]
-        exact_examples_file = os.path.join(self.args.load_folder_file[0], model_name + ".examples")
+        model_name = self.args.checkpoint_file
+        exact_examples_file = os.path.join(self.args.checkpoint_folder, model_name + ".examples")
         
         file_to_load = ""
 
@@ -137,7 +136,7 @@ class Trainer:
         else:
             print(f"No exact examples found for {model_name}. Looking for the most recent...")
             
-            folder = self.args.load_folder_file[0]
+            folder = self.args.checkpoint_folder
             all_files = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".examples")]
             checkpoint_files = [f for f in all_files if "checkpoint_" in os.path.basename(f)]
             
@@ -151,36 +150,44 @@ class Trainer:
         # Load the chosen file
         with open(file_to_load, "rb") as f:
             self.trainExamplesHistory = Unpickler(f).load()
-        
-        # Skip the first self-play if we loaded examples
-        self.skipFirstSelfPlay = True
-        print("Skipping the first self-play to catch up with the loaded examples")
+    
+    def saveTrainCheckpoint(self, iteration):
+        # Save checkpoint
+        folder = self.args.checkpoint_folder
+        extension = ".pth.tar"
+        self.nnet.save_checkpoint(folder=folder, filename=f'checkpoint_{iteration}{extension}')
 
-    def learn(self):
+        # Delete old checkpoints
+        checkpoint_files = [f for f in os.listdir(folder) if f.startswith("checkpoint_") and f.endswith(extension)]
+        checkpoint_files.sort(key=lambda x: int(re.findall(r'\d+', x)[0]))
+        for file in checkpoint_files[:-2]:
+            os.remove(os.path.join(folder, file))
+
+    def learn(self, start_iter=1):
         """
         Main Training Loop
         """
-        for i in range(1, self.args.num_iters + 1):
+        updates = 0
+        for i in range(start_iter, self.args.num_iters + 1):
             print(f'------ Iteration {i}/{self.args.num_iters} ------')
             
             # --- PHASE 1: SELF-PLAY ---
-            if not self.skipFirstSelfPlay or i > 1:
-                deque_examples = deque([], maxlen=self.args.maxlenOfQueue)
-                
-                # Play X episodes against itself
-                for _ in tqdm(range(self.args.num_eps), desc="Self Play"):
-                    self.mcts = MCTS(self.game, self.nnet, self.args)  # Reset MCTS
-                    deque_examples += self.executeEpisode()
+            deque_examples = deque([], maxlen=self.args.maxlenOfQueue)
+            
+            # Play X episodes against itself
+            for _ in tqdm(range(self.args.num_eps), desc="Self Play"):
+                self.mcts = MCTS(self.game, self.nnet, self.args)  # Reset MCTS
+                deque_examples += self.executeEpisode()
 
-                # Add to global history
-                self.trainExamplesHistory.append(deque_examples)
-                
-                if len(self.trainExamplesHistory) > self.args.numItersForTrainExamplesHistory:
-                    print(f"Deleting old data (Keeping {self.args.numItersForTrainExamplesHistory} iters)...")
-                    self.trainExamplesHistory.pop(0)
-                
-                # Save backup of examples
-                self.saveTrainExamples(i - 1)
+            # Add to global history
+            self.trainExamplesHistory.append(deque_examples)
+            
+            if len(self.trainExamplesHistory) > self.args.numItersForTrainExamplesHistory:
+                print(f"Deleting old data (Keeping {self.args.numItersForTrainExamplesHistory} iters)...")
+                self.trainExamplesHistory.pop(0)
+            
+            # Save backup of examples
+            self.saveTrainExamples(i - 1)
 
             # Flatten list of examples to train
             trainExamples = []
@@ -191,8 +198,8 @@ class Trainer:
             np.random.shuffle(trainExamples)
 
             # Save current network in 'temp' to compare later
-            self.nnet.save_checkpoint(folder=self.args.checkpoint, filename='temp.pth.tar')
-            self.pnet.load_checkpoint(folder=self.args.checkpoint, filename='temp.pth.tar')
+            self.nnet.save_checkpoint(folder=self.args.checkpoint_folder, filename='temp.pth.tar')
+            self.pnet.load_checkpoint(folder=self.args.checkpoint_folder, filename='temp.pth.tar')
             
             # MCTS for the old network
             pmcts = MCTS(self.game, self.pnet, self.args)
@@ -213,17 +220,19 @@ class Trainer:
                 self.writer.add_scalar('Arena/OldNetWins', pwins, i)
                 self.writer.add_scalar('Arena/NewNetWins', nwins, i)
                 self.writer.add_scalar('Arena/Draws', draws, i)
-                self.writer.add_scalar('Arena/WinRateNew', nwins / (nwins + pwins + draws), i)
-                self.writer.add_scalar('Arena/WinRateOld', pwins / (nwins + pwins + draws), i)
-                self.writer.add_scalar('Arena/DrawRate', draws / (nwins + pwins + draws), i)
+                self.writer.add_scalar('Arena/WinRateNew', nwins / (nwins + pwins), i)
+                self.writer.add_scalar('Arena/WinRateOld', pwins / (nwins + pwins), i)
 
             print(f"RESULTS: NEW={nwins}, OLD={pwins}, DRAW={draws}")
 
             # If the new one wins enough, we accept it
             if pwins + nwins == 0 or float(nwins) / (pwins + nwins) < self.args.updateThreshold:
                 print("REJECTED: The new network is not good enough.")
-                self.nnet.load_checkpoint(folder=self.args.checkpoint, filename='temp.pth.tar')
+                self.nnet.load_checkpoint(folder=self.args.checkpoint_folder, filename='temp.pth.tar')
+                self.writer.add_scalar('Arena/Updates', updates, i)
             else:
                 print("ACCEPTED: Saving new best network.")
-                self.nnet.save_checkpoint(folder=self.args.checkpoint, filename='best.pth.tar')
-                self.nnet.save_checkpoint(folder=self.args.checkpoint, filename=f'checkpoint_{i}.pth.tar')
+                self.nnet.save_checkpoint(folder=self.args.checkpoint_folder, filename='best.pth.tar')
+                self.saveTrainCheckpoint(i)
+                updates += 1
+                self.writer.add_scalar('Arena/Updates', updates, i)
