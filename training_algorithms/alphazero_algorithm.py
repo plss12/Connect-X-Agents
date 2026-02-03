@@ -27,6 +27,7 @@ args = dotdict({
     # 2. MCTS Configuration (Brain)
     'num_mcts_sims': 100,        # Simulations per move. MORE = Better game, but SLOWER.
     'cpuct': 2.0,                # Exploration constant
+    'gamma': 0.99,               # Discounting factor for distant future rewards
 
     # 3. Neural Network Configuration (Learning)
     'lr': 0.001,                 # Learning Rate
@@ -38,10 +39,10 @@ args = dotdict({
     'num_channels': 64,          # Network size (convolutional filters)
 
     # 4. Checkpoint Configuration
-    'load_model': False,         # Load previous model? (Set True to resume)
+    'load_model': False,                    # Load previous model? (Set True to resume)
     'checkpoint_folder': './alphazero/files/checkpoints/', # Folder to save checkpoints
     'checkpoint_file': 'best.pth.tar',      # File to load if load_model=True
-    'arenaCompare': 20,          # Evaluation games (Arena) New vs Old
+    'arenaCompare': 20,                     # Evaluation games (Arena) New vs Old
 })
 
 def main():
@@ -62,7 +63,6 @@ def main():
             print(f"Error loading checkpoint: {e}")
             print("Starting training from scratch...")
             args.load_model = False
-            start_iter = 1
     else:
         print("Starting training from scratch...")
 
@@ -80,8 +80,11 @@ def main():
         c.loadTrainExamples()
 
     # 6. Training
-    print(f"Starting the training loop from iteration {start_iter}...")
-    c.learn(start_iter)
+    print(f"Starting the training loop...")
+    if args.load_model:
+        c.learn(start_iter)
+    else:
+        c.learn()
 
     # 7. Close TensorBoard
     writer.close()

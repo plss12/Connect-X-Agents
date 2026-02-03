@@ -106,6 +106,9 @@ class MCTS:
         next_s = self.game.get_canonical_form(next_s, next_player)
 
         v = self.search(next_s)
+        
+        # Discounting factor for distant future rewards
+        v = self.args.gamma * v
 
         # 5. Backpropagation -> Update moving average Q = (N*Q + v) / (N+1) and N
         if (s, a) in self.Qsa:
