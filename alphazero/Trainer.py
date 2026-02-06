@@ -215,18 +215,21 @@ class Trainer:
             print("Facing New Net vs Old Net...")
             pwins, nwins, draws = self.arena(pmcts, nmcts)
 
+            winratenew = nwins / (nwins + pwins) if (nwins + pwins) > 0 else 0
+            winrateold = pwins / (nwins + pwins) if (nwins + pwins) > 0 else 0
+
             # Update TensorBoard
             if self.writer:
                 self.writer.add_scalar('Arena/OldNetWins', pwins, i)
                 self.writer.add_scalar('Arena/NewNetWins', nwins, i)
                 self.writer.add_scalar('Arena/Draws', draws, i)
-                self.writer.add_scalar('Arena/WinRateNew', nwins / (nwins + pwins), i)
-                self.writer.add_scalar('Arena/WinRateOld', pwins / (nwins + pwins), i)
+                self.writer.add_scalar('Arena/WinRateNew', winratenew, i)
+                self.writer.add_scalar('Arena/WinRateOld', winrateold, i)
 
             print(f"RESULTS: NEW={nwins}, OLD={pwins}, DRAW={draws}")
 
             # If the new one wins enough, we accept it
-            if (nwins / (pwins + nwins)) < self.args.updateThreshold:
+            if (nwins + pwins) > 0 and winratenew < self.args.updateThreshold:
                 print("REJECTED: The new network is not good enough.")
                 self.nnet.load_checkpoint(folder=self.args.checkpoint_folder, filename='temp.pth.tar')
                 self.writer.add_scalar('Arena/Updates', updates, i)
