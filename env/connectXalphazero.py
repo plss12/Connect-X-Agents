@@ -9,7 +9,7 @@ class Connect4Game:
 
     def get_init_board(self):
         """Returns an empty 6x7 board"""
-        return np.zeros((self.rows, self.cols), dtype=int)
+        return np.zeros((self.rows, self.cols), dtype=np.int8)
 
     def get_board_size(self):
         """Board shape: (rows, columns)"""
@@ -21,23 +21,19 @@ class Connect4Game:
     
     def get_valid_moves(self, board):
         """Returns a binary vector of valid moves"""
-        return (board[0, :] == 0).astype(int)
+        return (board[0, :] == 0).astype(np.int8)
 
     def get_next_state(self, board, player, action):
         """
         Applies an action and returns the NEW board and the next player.
         Does not modify the original board (makes a copy).
         """
-        # Validate action illegal moves
-        if board[0, action] != 0:
-            return board, player
-
         # Find the first empty row in that column
         b = np.copy(board)
-        row = np.where(b[:, action] == 0)[0][-1]
-        
-        # Place piece (We use 1 for P1 and -1 for P2 in the internal logic)
-        b[row, action] = player
+        for r in range(5, -1, -1):
+            if b[r, action] == 0:
+                b[r, action] = player
+                break
         
         # Return new board and change turn (-player)
         return b, -player
@@ -51,10 +47,10 @@ class Connect4Game:
          0 if the game has not ended
         """
         # Check win for the current player
-        if self._check_win(board, player):
+        if self.check_win(board, player):
             return 1
         # Check win for the opponent
-        if self._check_win(board, -player):
+        if self.check_win(board, -player):
             return -1
         # Check draw (full board)
         if 0 not in board[0, :]:
@@ -66,43 +62,32 @@ class Connect4Game:
         Convert the board to the perspective of the current player
         so the neural network always sees the same input format
         """
-        return player * board
+        return (player * board).astype(np.int8)
 
     def get_symmetries(self, board, pi):
         """
         Data Augmentation with horizontal flip
         """
         return [(board, pi), (np.fliplr(board), pi[::-1])]
-    
-    def _check_win(self, board, player):
+
+    def check_win(self, board, player):
         """
         Internal logic to check for 4 in a row.
         """
+        t = (board == player)
         # Horizontal
-        for c in range(self.cols - 3):
-            for r in range(self.rows):
-                if board[r, c] == player and board[r, c+1] == player and \
-                   board[r, c+2] == player and board[r, c+3] == player:
-                    return True
-                    
+        if (t[:, :-3] & t[:, 1:-2] & t[:, 2:-1] & t[:, 3:]).any():
+            return True
+
         # Vertical
-        for c in range(self.cols):
-            for r in range(self.rows - 3):
-                if board[r, c] == player and board[r+1, c] == player and \
-                   board[r+2, c] == player and board[r+3, c] == player:
-                    return True
-                    
+        if (t[:-3, :] & t[1:-2, :] & t[2:-1, :] & t[3:, :]).any():
+            return True
+
         # Diagonals
-        for c in range(self.cols - 3):
-            # Positive Diagonal
-            for r in range(self.rows - 3):
-                if board[r, c] == player and board[r+1, c+1] == player and \
-                   board[r+2, c+2] == player and board[r+3, c+3] == player:
-                    return True
-            # Negative Diagonal
-            for r in range(3, self.rows):
-                if board[r, c] == player and board[r-1, c+1] == player and \
-                   board[r-2, c+2] == player and board[r-3, c+3] == player:
-                    return True
-                    
+        if np.any( t[:-3, :-3] & t[1:-2, 1:-2] & t[2:-1, 2:-1] & t[3:, 3:] ):
+            return True
+
+        if np.any( t[3:, :-3] & t[2:-1, 1:-2] & t[1:-2, 2:-1] & t[:-3, 3:] ):
+            return True
+            
         return False

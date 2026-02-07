@@ -12,7 +12,10 @@ from alphazero.Trainer import Trainer
 # Helper class to use dot notation (args.variable)
 class dotdict(dict):
     def __getattr__(self, name):
-        return self[name]
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
 
 # --- HYPERPARAMETER CONFIGURATION ---
 args = dotdict({

@@ -97,18 +97,16 @@ def check_winning_move(board, col, mark):
 
 
 
+MODEL_FILENAME = "PPO.pth"
 TRAINED_MODEL = None
 DEVICE = 'cpu'
 
 def load_model():
     global TRAINED_MODEL
 
-    kaggle_path = "/kaggle_simulations/agent/model.pth"
-    
-    if os.path.exists(kaggle_path):
-        model_path = kaggle_path
-    else:
-        model_path = "model.pth"
+    kaggle_path = os.path.join('/kaggle_simulations/agent/', MODEL_FILENAME)
+    system_path = os.path.join('models/', MODEL_FILENAME)
+    model_path = kaggle_path if os.path.exists(kaggle_path) else system_path
 
     base_net = FeatureExtractor(state_shape=(3, 6, 7), device=DEVICE)
     actor = Actor(base_net, action_shape=7, device=DEVICE)

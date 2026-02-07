@@ -7,10 +7,16 @@ import sys
 import time
 import math
 
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
+
 # --- HELPER ---
 class dotdict(dict):
     def __getattr__(self, name):
-        return self[name]
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
 
 # --- GAME ---
 class Connect4Game:
@@ -29,23 +35,19 @@ class Connect4Game:
 
     def get_valid_moves(self, board):
         """Returns a binary vector of valid moves"""
-        return (board[0, :] == 0).astype(int)
+        return (board[0, :] == 0).astype(np.int8)
 
     def get_next_state(self, board, player, action):
         """
         Applies an action and returns the NEW board and the next player.
         Does not modify the original board (makes a copy).
         """
-        # Validate action illegal moves
-        if board[0, action] != 0:
-            return board, player
-
         # Find the first empty row in that column
         b = np.copy(board)
-        row = np.where(b[:, action] == 0)[0][-1]
-        
-        # Place piece (We use 1 for P1 and -1 for P2 in the internal logic)
-        b[row, action] = player
+        for r in range(5, -1, -1):
+            if b[r, action] == 0:
+                b[r, action] = player
+                break
         
         # Return new board and change turn (-player)
         return b, -player
@@ -59,10 +61,10 @@ class Connect4Game:
          0 if the game has not ended
         """
         # Check win for the current player
-        if self._check_win(board, player):
+        if self.check_win(board, player):
             return 1
         # Check win for the opponent
-        if self._check_win(board, -player):
+        if self.check_win(board, -player):
             return -1
         # Check draw (full board)
         if 0 not in board[0, :]:
@@ -74,39 +76,28 @@ class Connect4Game:
         Convert the board to the perspective of the current player
         so the neural network always sees the same input format
         """
-        return player * board
+        return (player * board).astype(np.int8)
 
-    def _check_win(self, board, player):
+    def check_win(self, board, player):
         """
         Internal logic to check for 4 in a row.
         """
+        t = (board == player)
         # Horizontal
-        for c in range(self.cols - 3):
-            for r in range(self.rows):
-                if board[r, c] == player and board[r, c+1] == player and \
-                   board[r, c+2] == player and board[r, c+3] == player:
-                    return True
-                    
+        if (t[:, :-3] & t[:, 1:-2] & t[:, 2:-1] & t[:, 3:]).any():
+            return True
+
         # Vertical
-        for c in range(self.cols):
-            for r in range(self.rows - 3):
-                if board[r, c] == player and board[r+1, c] == player and \
-                   board[r+2, c] == player and board[r+3, c] == player:
-                    return True
-                    
+        if (t[:-3, :] & t[1:-2, :] & t[2:-1, :] & t[3:, :]).any():
+            return True
+
         # Diagonals
-        for c in range(self.cols - 3):
-            # Positive Diagonal
-            for r in range(self.rows - 3):
-                if board[r, c] == player and board[r+1, c+1] == player and \
-                   board[r+2, c+2] == player and board[r+3, c+3] == player:
-                    return True
-            # Negative Diagonal
-            for r in range(3, self.rows):
-                if board[r, c] == player and board[r-1, c+1] == player and \
-                   board[r-2, c+2] == player and board[r-3, c+3] == player:
-                    return True
-                    
+        if np.any( t[:-3, :-3] & t[1:-2, 1:-2] & t[2:-1, 2:-1] & t[3:, 3:] ):
+            return True
+
+        if np.any( t[3:, :-3] & t[2:-1, 1:-2] & t[1:-2, 2:-1] & t[:-3, 3:] ):
+            return True
+            
         return False
 
 # --- NEURAL NETWORK ---
@@ -194,24 +185,44 @@ class Connect4NNet(nn.Module):
         """
         Fast inference for MCTS
         """
-        # Prepare input
         # Convert the board from (6,7) to (3,6,7)
         encoded_board = np.stack([
             (board == 1).astype(np.float32),
             (board == -1).astype(np.float32),
             (board == 0).astype(np.float32)
         ])
-        board_tensor = torch.FloatTensor(encoded_board)
-        if self.args.cuda: 
-            board_tensor = board_tensor.contiguous().cuda()
-        board_tensor = board_tensor.view(1, 3, board.shape[0], board.shape[1])
-        
-        self.eval()
-        with torch.no_grad():
+        board_tensor = torch.from_numpy(encoded_board).unsqueeze(0)
+
+        with torch.no_grad():            
             pi, v = self(board_tensor)
 
         # pi returns LogSoftmax, v returns Tanh
         return torch.exp(pi).detach().cpu().numpy()[0], v.item()
+
+class NNetWrapper: 
+    """
+    Wrapper to use the JIT model compiled in the MCTS.
+    """
+    def __init__(self, traced_model):
+        self.model = traced_model
+    
+    def predict(self, board):
+        """
+        Fast inference for MCTS
+        """
+        # Convert the board from (6,7) to (3,6,7)
+        encoded_board = np.stack([
+            (board == 1).astype(np.float32),
+            (board == -1).astype(np.float32),
+            (board == 0).astype(np.float32)
+        ])
+        board_tensor = torch.from_numpy(encoded_board).unsqueeze(0)
+        
+        with torch.no_grad():
+            pi, v = self.model(board_tensor)
+
+        # pi returns LogSoftmax, v returns Tanh
+        return torch.exp(pi).detach().numpy()[0], v.item()
 
 # --- MCTS ---
 class MCTS:
@@ -256,7 +267,7 @@ class MCTS:
         if temp == 0:
             best_counts = [c if valid else -1 for c, valid in zip(counts, valid_moves)]
 
-            bestAs = np.array(np.argwhere(counts == np.max(counts))).flatten()
+            bestAs = np.array(np.argwhere(best_counts == np.max(best_counts))).flatten()
             bestA = np.random.choice(bestAs)
             probs = [0] * len(counts)
             probs[bestA] = 1
@@ -286,32 +297,39 @@ class MCTS:
         s = canonicalBoard.tobytes()
 
         # 1. Game ended -> Return the result
-        if s not in self.Es:
-            self.Es[s] = self.game.get_game_ended(canonicalBoard, 1)
-        if self.Es[s] != 0:
-            return -self.Es[s]
+        es = self.Es.get(s)
+        if es is not None :
+            if es != 0:
+                return -es
+        else:
+            es = self.game.get_game_ended(canonicalBoard, 1)
+            self.Es[s] = es
+            if es != 0:
+                return -es
         
         # 2. Expert knowledge: Attack and Defense
-        if s not in self.Vs:
-            self.Vs[s] = self.game.get_valid_moves(canonicalBoard)
-        valid_moves = self.Vs[s]
+        valid_moves = self.Vs.get(s)
+        if valid_moves is None:
+            valid_moves = self.game.get_valid_moves(canonicalBoard)
+            self.Vs[s] = valid_moves
 
         # Attack: Check if player can win and stop the search if so
-        winning_move = self._manual_check_win(canonicalBoard, 1, valid_moves)
+        winning_move = self._check_win_inplace(canonicalBoard, 1, valid_moves)
         if winning_move is not None:
             self._update_stats(s, winning_move, 1)
             return -1 
         
         # Defense: Check if player can block opponent from winning and prune the tree if so
-        blocking_move = self._manual_check_win(canonicalBoard, -1, valid_moves)
+        blocking_move = self._check_win_inplace(canonicalBoard, -1, valid_moves)
         best_act = -1
 
         if blocking_move is not None:
             best_act = blocking_move
 
         else:
-            # 3. New leaf -> Expand and backpropagate the nn value 
-            if s not in self.Ps:
+            # 3. New leaf -> Expand and backpropagate the nn value
+            ps = self.Ps.get(s)
+            if ps is None:
                 pi, v = self.nnet.predict(canonicalBoard)
                 
                 # Mask for filtering invalid moves
@@ -336,11 +354,14 @@ class MCTS:
             cpuct = self.args.cpuct
             sqrt_Ns = math.sqrt(self.Ns[s])
 
-            for a in np.where(valid_moves)[0]:
-                if (s, a) in self.Qsa:
-                    u = self.Qsa[(s, a)] + cpuct * self.Ps[s][a] * sqrt_Ns / (1 + self.Nsa[(s, a)])
+            valid_inds = np.where(valid_moves)[0]
+            for a in valid_inds:
+                qsa = self.Qsa.get((s, a), a)
+                if qsa is not None:
+                    nsa = self.Nsa.get((s, a), 0)
+                    u = qsa + cpuct * ps[a] * sqrt_Ns / (1 + nsa)
                 else:
-                    u = cpuct * self.Ps[s][a] * sqrt_Ns + 1e-8 
+                    u = cpuct * ps[a] * sqrt_Ns + 1e-8 
 
                 if u > cur_best:
                     cur_best = u
@@ -367,193 +388,145 @@ class MCTS:
         """
         Helper function to perform backpropagation (update Qsa and Nsa).
         """
-        if (s, a) in self.Qsa:
+        key = (s, a)
+        nsa = self.Nsa.get(key, 0)
+        if nsa > 0:
             # Update moving average Q = (N*Q + v) / (N+1) and N
-            self.Qsa[(s, a)] = (self.Nsa[(s, a)] * self.Qsa[(s, a)] + v) / (self.Nsa[(s, a)] + 1)
-            self.Nsa[(s, a)] += 1
+            self.Qsa[key] = (nsa * self.Qsa[key] + v) / (nsa + 1)
+            self.Nsa[key] = nsa + 1
         else:
-            self.Qsa[(s, a)] = v
-            self.Nsa[(s, a)] = 1
+            self.Qsa[key] = v
+            self.Nsa[key] = 1
         
-        if s not in self.Ns:
-            self.Ns[s] = 0
-        
-        self.Ns[s] += 1
+        self.Ns[s] = self.Ns.get(s, 0) + 1
     
-    def _manual_check_win(self, board, player, valid_moves):
+    def _check_win_inplace(self, board, player, valid_moves):
         """
-        Checks if the current player can win or block the opponent from winning.
+        Simulates placing a piece in each valid column and checks for a win.
         """
-        rows, cols = self.game.get_board_size()
+        valid_cols = np.where(valid_moves)[0]
+        
+        for col in valid_cols:
+            row_idx = -1
+            for r in range(5, -1, -1):
+                if board[r, col] == 0:
+                    row_idx = r
+                    break
+            
+            board[row_idx, col] = player
+            is_win = self.game.check_win(board, player)
+            board[row_idx, col] = 0
+            
+            if is_win:
+                return col
+                
+        return None
+    
+    def _check_win(self, board, player, valid_moves):
+        """
+        Simulates placing a piece in each valid column and checks for a win.
+        """
         valid_cols = np.where(valid_moves)[0]
         for col in valid_cols:
-            row = np.max(np.where(board[:, col] == 0))
-
-            # Check 4 in a row (Horizontal, Vertical, Diagonal)
-            # Horizontal
-            c_start = max(0, col - 3)
-            c_end = min(cols, col + 4)
-            count = 0
-            for c in range(c_start, c_end):
-                val = player if c == col else board[row, c]
-                if val == player:
-                    count += 1
-                    if count == 4: return col
-                else:
-                    count = 0
-
-            # Vertical
-            if row + 3 < rows:
-                if np.all(board[row+1:row+4, col] == player):
-                    return col
-
-            # Diagonals
-            for d_row, d_col in [(1, 1), (1, -1)]:
-                count = 1
-                # Positive directions
-                for i in range(1, 4):
-                    r, c = row + i*d_row, col + i*d_col
-                    if 0 <= r < rows and 0 <= c < cols and board[r, c] == player:
-                        count += 1
-                    else: break
-                # Negative directions
-                for i in range(1, 4):
-                    r, c = row - i*d_row, col - i*d_col
-                    if 0 <= r < rows and 0 <= c < cols and board[r, c] == player:
-                        count += 1
-                    else: break
-                
-                if count >= 4: return col
-        
+            temp_board, _ = self.game.get_next_state(board, player, col)
+            if self.game.check_win_fast(temp_board, player):
+                return col
         return None
 
-# --- HELPER WINNER FUNCTION ---
-def check_winning_move(board, player, config):
-    """
-    Check if player can win in the next move.
-    """
-    rows = config.rows
-    columns = config.columns
-    
-    valid_cols = np.where(board[0, :] == 0)[0]
-    for col in valid_cols:
-        row = np.max(np.where(board[:, col] == 0))
-
-        # Horizontal
-        c_start = max(0, col - 3)
-        c_end = min(columns, col + 4)
-        count = 0
-        for c in range(c_start, c_end):
-            val = player if c == col else board[row, c]
-            if val == player:
-                count += 1
-                if count == 4: return col
-            else:
-                count = 0
-
-        # Vertical
-        if row + 3 < rows:
-            if np.all(board[row+1:row+4, col] == player):
-                return col
-
-        # Diagonals
-        for d_row, d_col in [(1, 1), (1, -1)]:
-            count = 1
-            
-            # Positive direction
-            for i in range(1, 4):
-                r, c = row + i*d_row, col + i*d_col
-                if 0 <= r < rows and 0 <= c < columns and board[r, c] == player:
-                    count += 1
-                else: break
-            
-            # Negative direction
-            for i in range(1, 4):
-                r, c = row - i*d_row, col - i*d_col
-                if 0 <= r < rows and 0 <= c < columns and board[r, c] == player:
-                    count += 1
-                else: break
-            
-            if count >= 4: return col
-
-    return None
-
 # --- CONFIGURATION ---
-MODEL_FILENAME = 'best.pth.tar'
+MODEL_FILENAME = 'AlphaZero.pth'
 NUM_CHANNELS = 64
 DEVICE = 'cpu'
 TIME_LIMIT = 1.9
+ESTADISTICAS = False
 
 GLOBAL_NET = None
 GLOBAL_GAME = None
 GLOBAL_ARGS = None
+GLOBAL_MCTS = None
 
 def load_model():
     """
     Load model looking in Kaggle or local paths.
     """
     kaggle_path = os.path.join('/kaggle_simulations/agent/', MODEL_FILENAME)
-    
-    if os.path.exists(kaggle_path):
-        model_path = kaggle_path
-    else:
-        model_path = MODEL_FILENAME
+    system_path = os.path.join('models/', MODEL_FILENAME)
+    model_path = kaggle_path if os.path.exists(kaggle_path) else system_path
 
     game = Connect4Game()
     args = dotdict({'num_channels': NUM_CHANNELS, 'cpuct': 2.0, 'gamma': 0.99, 'cuda': False})
-    nnet = Connect4NNet(game, args)
+    raw_nnet = Connect4NNet(game, args)
     
-    if os.path.exists(model_path):
-        try:
-            checkpoint = torch.load(model_path, map_location=DEVICE)
-            nnet.load_state_dict(checkpoint['state_dict'])
-            nnet.to(DEVICE)
-            nnet.eval()
-            return nnet, game, args
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            return None, None, None
-    else:
+    if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found at {model_path}")
-        return None, None, None
+    
+    try:
+        model = torch.load(model_path, map_location=DEVICE)
+        raw_nnet.load_state_dict(model)
+        raw_nnet.to(DEVICE)
+        raw_nnet.eval()
+        nnet = torch.quantization.quantize_dynamic(raw_nnet, {nn.Linear}, dtype=torch.qint8, inplace=True)
+        dummy_input = torch.randn(1, 3, 6, 7)
+        traced_nnet = torch.jit.trace(raw_nnet, dummy_input)
+        final_nnet = NNetWrapper(traced_nnet)
+        return final_nnet, game, args
+
+    except Exception as e:
+        raise RuntimeError(f"Error loading model: {e}") from e
 
 # --- ALPHAZERO ---
 def alphazero_agent(observation, configuration):
-    global GLOBAL_NET, GLOBAL_GAME, GLOBAL_ARGS
+    global GLOBAL_NET, GLOBAL_GAME, GLOBAL_ARGS, GLOBAL_MCTS
+
+    start_turn_time = time.time()
+    current_time_limit = TIME_LIMIT
 
     # 1. Load model
     if GLOBAL_NET is None:
         GLOBAL_NET, GLOBAL_GAME, GLOBAL_ARGS = load_model()
+        GLOBAL_MCTS = MCTS(GLOBAL_GAME, GLOBAL_NET, GLOBAL_ARGS)
+
+        elapsed_loading = time.time() - start_turn_time
+        current_time_limit = max(0.1, TIME_LIMIT - elapsed_loading)
 
     # 2. Prepare board
-    board = np.array(observation.board).reshape(configuration.rows, configuration.columns)
+    board = np.array(observation.board, dtype=np.int8).reshape(configuration.rows, configuration.columns)
     me = observation.mark
     opponent = 3 - me
 
-    # 3. Quick heuristic
-    # Check for winning move
-    win_col = check_winning_move(board, me, configuration)
-    if win_col is not None:
-        print(f"Winning move at column {win_col}")
-        return int(win_col)
-    
-    # Check for opponent winning move
-    block_col = check_winning_move(board, opponent, configuration)
-    if block_col is not None:
-        print(f"Blocking opponent's winning move at column {block_col}")
-        return int(block_col)
-    
-    # If no winning move, use model
-    # 4. Prepare canonical board
-    canonical_board = np.zeros((6, 7), dtype=int)
+    # 3. Prepare canonical board
+    canonical_board = np.zeros((6, 7), dtype=np.int8)
     canonical_board[board == me] = 1
     canonical_board[board == opponent] = -1
 
-    # 5. MCTS with time limit
-    mcts = MCTS(GLOBAL_GAME, GLOBAL_NET, GLOBAL_ARGS)
-    probs, sims = mcts.getActionProb(canonical_board, temp=0, time_limit_sec=TIME_LIMIT)
+    # 4. Check for first move
+    if observation.step == 0 and board[5, 3] == 0:
+        if ESTADISTICAS:
+            print("First better move: 3")
+        return 3
+
+    # 5. Check for immediate win or block
+    valid_moves = GLOBAL_GAME.get_valid_moves(canonical_board)
+
+    # Win Instantly?
+    win_col = GLOBAL_MCTS._check_win_inplace(canonical_board, 1, valid_moves)
+    if win_col is not None: 
+        if ESTADISTICAS:
+            print("Winning move: ", win_col)
+        return int(win_col)
+
+    # Block Instantly?
+    block_col = GLOBAL_MCTS._check_win_inplace(canonical_board, -1, valid_moves)
+    if block_col is not None:
+        if ESTADISTICAS:
+            print("Blocking move: ", block_col)
+        return int(block_col)
+
+    # 6. MCTS with time limit
+    probs, sims = GLOBAL_MCTS.getActionProb(canonical_board, temp=0, time_limit_sec=current_time_limit)
     best_action = int(np.argmax(probs))
 
-    print(f"MCTS: {sims} simulations, best action: {best_action}")
+    if ESTADISTICAS:
+        print(f"MCTS: {sims} simulations, best action: {best_action}")
 
     return best_action

@@ -11,10 +11,10 @@ class Trainer:
     def __init__(self, game, nnet, args, writer=None):
         self.game = game
         self.nnet = nnet
-        self.pnet = self.nnet.__class__(game, args)  # Previous network
+        self.pnet = self.nnet.__class__(game, args)
         self.args = args
         self.mcts = MCTS(game, nnet, args)
-        self.trainExamplesHistory = []  # Experience buffer
+        self.trainExamplesHistory = []
         self.writer = writer
 
     def executeEpisode(self):

@@ -67,32 +67,39 @@ class MCTS:
         s = canonicalBoard.tobytes()
 
         # 1. Game ended -> Return the result
-        if s not in self.Es:
-            self.Es[s] = self.game.get_game_ended(canonicalBoard, 1)
-        if self.Es[s] != 0:
-            return -self.Es[s]
+        es = self.Es.get(s)
+        if es is not None :
+            if es != 0:
+                return -es
+        else:
+            es = self.game.get_game_ended(canonicalBoard, 1)
+            self.Es[s] = es
+            if es != 0:
+                return -es
         
         # 2. Expert knowledge: Attack and Defense
-        if s not in self.Vs:
-            self.Vs[s] = self.game.get_valid_moves(canonicalBoard)
-        valid_moves = self.Vs[s]
+        valid_moves = self.Vs.get(s)
+        if valid_moves is None:
+            valid_moves = self.game.get_valid_moves(canonicalBoard)
+            self.Vs[s] = valid_moves
 
         # Attack: Check if player can win and stop the search if so
-        winning_move = self._manual_check_win(canonicalBoard, 1, valid_moves)
+        winning_move = self._check_win_inplace(canonicalBoard, 1, valid_moves)
         if winning_move is not None:
             self._update_stats(s, winning_move, 1)
-            return -1.0
+            return -1 
         
         # Defense: Check if player can block opponent from winning and prune the tree if so
-        blocking_move = self._manual_check_win(canonicalBoard, -1, valid_moves)
+        blocking_move = self._check_win_inplace(canonicalBoard, -1, valid_moves)
         best_act = -1
 
         if blocking_move is not None:
             best_act = blocking_move
-        
+
         else:
-            # 3. New leaf -> Expand and backpropagate the nn value 
-            if s not in self.Ps:
+            # 3. New leaf -> Expand and backpropagate the nn value
+            ps = self.Ps.get(s)
+            if ps is None:
                 pi, v = self.nnet.predict(canonicalBoard)
                 
                 # Mask for filtering invalid moves
@@ -117,11 +124,14 @@ class MCTS:
             cpuct = self.args.cpuct
             sqrt_Ns = math.sqrt(self.Ns[s])
 
-            for a in np.where(valid_moves)[0]:
-                if (s, a) in self.Qsa:
-                    u = self.Qsa[(s, a)] + cpuct * self.Ps[s][a] * sqrt_Ns / (1 + self.Nsa[(s, a)])
+            valid_inds = np.where(valid_moves)[0]
+            for a in valid_inds:
+                qsa = self.Qsa.get((s, a), a)
+                if qsa is not None:
+                    nsa = self.Nsa.get((s, a), 0)
+                    u = qsa + cpuct * ps[a] * sqrt_Ns / (1 + nsa)
                 else:
-                    u = cpuct * self.Ps[s][a] * sqrt_Ns + 1e-8 
+                    u = cpuct * ps[a] * sqrt_Ns + 1e-8 
 
                 if u > cur_best:
                     cur_best = u
@@ -143,67 +153,52 @@ class MCTS:
         self._update_stats(s, a, v)
 
         return -v
-
+        
     def _update_stats(self, s, a, v):
         """
         Helper function to perform backpropagation (update Qsa and Nsa).
         """
-        if (s, a) in self.Qsa:
+        key = (s, a)
+        nsa = self.Nsa.get(key, 0)
+        if nsa > 0:
             # Update moving average Q = (N*Q + v) / (N+1) and N
-            self.Qsa[(s, a)] = (self.Nsa[(s, a)] * self.Qsa[(s, a)] + v) / (self.Nsa[(s, a)] + 1)
-            self.Nsa[(s, a)] += 1
+            self.Qsa[key] = (nsa * self.Qsa[key] + v) / (nsa + 1)
+            self.Nsa[key] = nsa + 1
         else:
-            self.Qsa[(s, a)] = v
-            self.Nsa[(s, a)] = 1
+            self.Qsa[key] = v
+            self.Nsa[key] = 1
         
-        if s not in self.Ns:
-            self.Ns[s] = 0
-        
-        self.Ns[s] += 1
+        self.Ns[s] = self.Ns.get(s, 0) + 1
 
-    def _manual_check_win(self, board, player, valid_moves):
+    def _check_win_inplace(self, board, player, valid_moves):
         """
-        Checks if the current player can win or block the opponent from winning.
+        Simulates placing a piece in each valid column and checks for a win.
         """
-        rows, cols = self.game.get_board_size()
+        valid_cols = np.where(valid_moves)[0]
+        
+        for col in valid_cols:
+            row_idx = -1
+            for r in range(5, -1, -1):
+                if board[r, col] == 0:
+                    row_idx = r
+                    break
+            
+            board[row_idx, col] = player
+            is_win = self.game.check_win(board, player)
+            board[row_idx, col] = 0
+            
+            if is_win:
+                return col
+                
+        return None
+
+    def _check_win(self, board, player, valid_moves):
+        """
+        Simulates placing a piece in each valid column and checks for a win.
+        """
         valid_cols = np.where(valid_moves)[0]
         for col in valid_cols:
-            row = np.max(np.where(board[:, col] == 0))
-
-            # Check 4 in a row (Horizontal, Vertical, Diagonal)
-            # Horizontal
-            c_start = max(0, col - 3)
-            c_end = min(cols, col + 4)
-            count = 0
-            for c in range(c_start, c_end):
-                val = player if c == col else board[row, c]
-                if val == player:
-                    count += 1
-                    if count == 4: return col
-                else:
-                    count = 0
-
-            # Vertical
-            if row + 3 < rows:
-                if np.all(board[row+1:row+4, col] == player):
-                    return col
-
-            # Diagonals
-            for d_row, d_col in [(1, 1), (1, -1)]:
-                count = 1
-                # Positive directions
-                for i in range(1, 4):
-                    r, c = row + i*d_row, col + i*d_col
-                    if 0 <= r < rows and 0 <= c < cols and board[r, c] == player:
-                        count += 1
-                    else: break
-                # Negative directions
-                for i in range(1, 4):
-                    r, c = row - i*d_row, col - i*d_col
-                    if 0 <= r < rows and 0 <= c < cols and board[r, c] == player:
-                        count += 1
-                    else: break
-                
-                if count >= 4: return col
-        
+            temp_board, _ = self.game.get_next_state(board, player, col)
+            if self.game.check_win_fast(temp_board, player):
+                return col
         return None

@@ -139,7 +139,6 @@ class MCTS:
 
 
 # Adapting ConnectX to pyplAI style
-
 class ConnectXState:
     ROWS = 6
     COLUMNS = 7
@@ -250,7 +249,8 @@ def mcts_agent(observation, configuration):
          ConnectXState.is_final_state, 
          ConnectXState.wins_player, 
          2, 
-         limit_time)
+         limit_time,
+         estadisticas=True)
 
     recommended_move = mcts_solver.ejecuta(pyplai_state)
     

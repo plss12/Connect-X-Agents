@@ -150,6 +150,7 @@ def check_winning_move(board, col, mark):
 
 
 
+MODEL_FILENAME = "Rainbow.pth"
 TRAINED_MODEL = None
 DEVICE = 'cpu'
 NUM_ATOMS = 101
@@ -162,12 +163,9 @@ SUPPORT = torch.linspace(V_MIN, V_MAX, NUM_ATOMS).to(DEVICE)
 def load_model():
     global TRAINED_MODEL
 
-    kaggle_path = "/kaggle_simulations/agent/model.pth"
-    
-    if os.path.exists(kaggle_path):
-        model_path = kaggle_path
-    else:
-        model_path = "model.pth"
+    kaggle_path = os.path.join('/kaggle_simulations/agent/', MODEL_FILENAME)
+    system_path = os.path.join('models/', MODEL_FILENAME)
+    model_path = kaggle_path if os.path.exists(kaggle_path) else system_path
 
     model = RainbowCNN(state_shape=(3, 6, 7), action_shape=7, num_atoms=NUM_ATOMS, device=DEVICE)
 
