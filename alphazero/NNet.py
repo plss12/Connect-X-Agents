@@ -39,7 +39,7 @@ class Connect4NNet(nn.Module):
 
         # Arguments and hyperparameters
         self.args = args
-        num_channels = args.get('num_channels', 64)
+        num_channels = args.get('num_channels', 32)
 
         # --- BODY ---
         # Initial Block: Converts the 3 input channels to 'num_channels'
@@ -49,14 +49,12 @@ class Connect4NNet(nn.Module):
         # Residual Tower: 4 Blocks
         self.res1 = ResidualBlock(num_channels)
         self.res2 = ResidualBlock(num_channels)
-        self.res3 = ResidualBlock(num_channels)
-        self.res4 = ResidualBlock(num_channels)
 
         # --- POLICY HEAD ---
         # Reduces depth and calculates movement probabilities
-        self.p_conv = nn.Conv2d(num_channels, 32, kernel_size=1) 
-        self.p_bn = nn.BatchNorm2d(32)
-        self.p_fc = nn.Linear(32 * self.board_x * self.board_y, self.action_size)
+        self.p_conv = nn.Conv2d(num_channels, 16, kernel_size=1) 
+        self.p_bn = nn.BatchNorm2d(16)
+        self.p_fc = nn.Linear(16 * self.board_x * self.board_y, self.action_size)
 
         # --- VALUE HEAD ---
         # Reduces depth and calculates who wins (-1 to 1)
@@ -69,15 +67,13 @@ class Connect4NNet(nn.Module):
         # s: input state (Batch, 3, 6, 7)
         
         # 1. Body
-        x = F.relu(self.bn(self.conv(s))) # Input
+        x = F.relu(self.bn(self.conv(s)))   # Input
         x = self.res1(x)                    # ResBlock 1
         x = self.res2(x)                    # ResBlock 2
-        x = self.res3(x)                    # ResBlock 3
-        x = self.res4(x)                    # ResBlock 4
 
         # 2. Policy Head
-        p = F.relu(self.p_bn(self.p_conv(x)))             # Input
-        p = p.view(-1, 32 * self.board_x * self.board_y) # Flatten
+        p = F.relu(self.p_bn(self.p_conv(x)))            # Input
+        p = p.view(-1, 16 * self.board_x * self.board_y) # Flatten
         p = self.p_fc(p)                                 # Linear
         p = F.log_softmax(p, dim=1)                      # LogSoftmax
 
@@ -104,6 +100,8 @@ class NNetWrapper:
 
         if args.cuda:
             self.nnet.cuda()
+        
+        self.nnet = torch.compile(self.nnet)
 
     def train(self, examples, writer, iteration):
         """

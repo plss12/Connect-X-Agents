@@ -2,6 +2,8 @@ import os
 import sys
 from torch.utils.tensorboard import SummaryWriter
 import time
+import torch
+torch.set_float32_matmul_precision('medium')
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
 sys.path.append(project_root)
@@ -20,17 +22,17 @@ class dotdict(dict):
 # --- HYPERPARAMETER CONFIGURATION ---
 args = dotdict({
     # 1. Training Configuration (Cycle)
-    'num_iters': 250,            # Number of total generations (Iterations)
+    'num_iters': 200,            # Number of total generations (Iterations)
     'num_eps': 100,              # Episodes (games) of Self-Play per iteration
-    'tempThreshold': 15,         # Turns with exploration (temperature=1) before playing seriously
-    'updateThreshold': 0.5,      # % of wins necessary for the new network to replace the old one
-    'maxlenOfQueue': 25000,      # Maximum number of training examples stored in memory
-    'numItersForTrainExamplesHistory': 10, # Number of past iterations remembered for training
-    'arenaCompare': 40,          # Evaluation games (Arena) New vs Old
+    'tempThreshold': 10,         # Turns with exploration (temperature=1) before playing seriously
+    'updateThreshold': 0.55,     # % of wins necessary for the new network to replace the old one
+    'maxlenOfQueue': 100000,     # Maximum number of training examples stored in memory
+    'numItersForTrainExamplesHistory': 25, # Number of past iterations remembered for training
+    'arenaCompare': 50,          # Evaluation games (Arena) New vs Old
 
     # 2. MCTS Configuration (Brain)
-    'num_mcts_sims': 50,         # Simulations per move. MORE = Better game, but SLOWER.
-    'cpuct': 2.0,                # Exploration constant
+    'num_mcts_sims': 500,        # Simulations per move. MORE = Better game, but SLOWER.
+    'cpuct': 1.0,                # Exploration constant
     'gamma': 0.99,               # Discounting factor for distant future rewards
 
     # 3. Neural Network Configuration (Learning)
@@ -38,10 +40,10 @@ args = dotdict({
     'min_lr': 0.0001,            # Final Learning Rate
     'weight_decay': 1e-4,        # L2 Regularization (Weight Decay)
     # 'dropout': 0.3,              # Dropout to prevent overfitting
-    'epochs': 20,                # Number of training epochs for the network in each iteration
-    'batch_size': 256,           # Batch size
+    'epochs': 10,                # Number of training epochs for the network in each iteration
+    'batch_size': 512,           # Batch size
     'cuda': True,                # Use GPU (Change to False if you don't have NVIDIA)
-    'num_channels': 64,          # Network size (convolutional filters)
+    'num_channels': 32,          # Network size (convolutional filters)
 
     # 4. Checkpoint Configuration
     'load_model': False,                    # Load previous model? (Set True to resume)
